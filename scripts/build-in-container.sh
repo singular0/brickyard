@@ -17,7 +17,7 @@ if ! apt-get update -qq 2>/dev/null; then
 fi
 
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-    build-essential chrpath cpio debianutils diffstat gawk gcc-multilib git \
+    build-essential chrpath cpio debianutils diffstat file gawk gcc-multilib git \
     iputils-ping libegl1-mesa libsdl1.2-dev locales python python3 python3-git \
     python3-jinja2 python3-pexpect python3-pip socat texinfo unzip wget xterm \
     xz-utils
