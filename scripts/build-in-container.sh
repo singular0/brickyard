@@ -38,7 +38,10 @@ chown -R builder:builder "$BUILD_DIR" "$YOCTO_DIR/downloads" "$YOCTO_DIR/sstate-
 su builder -s /bin/bash <<EOF
 set -euo pipefail
 cd "$HERE"
+# oe-init-build-env reads unset variables (BBSERVER, ...), so relax -u for it.
+set +u
 source "$YOCTO_DIR/poky/oe-init-build-env" "$BUILD_DIR"
+set -u
 
 cp "$HERE/conf/local.conf" conf/local.conf
 cat > conf/bblayers.conf <<'BBEOF'
