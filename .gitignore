@@ -1,0 +1,6 @@
+# build outputs — never commit these
+yocto/
+build/
+feed/
+__pycache__/
+*.pyc

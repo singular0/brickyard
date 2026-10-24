@@ -1,0 +1,99 @@
+name: brickyard
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "feed-v*"
+
+# This workflow assumes the brickyard repo IS this directory (repo root).
+# If you instead push the whole parent project as one repo, move .github/
+# to the parent root and prefix every path below with "packages/".
+
+concurrency: brickyard
+
+env:
+  # Optional Cloudflare R2 cache (sstate + downloads). Leave the secrets
+  # unset to build without a persistent cache.
+  RCLONE_CONFIG_R2_TYPE: s3
+  RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+  RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Cache Yocto layers
+        uses: actions/cache@v4
+        with:
+          path: |
+            yocto/poky
+            yocto/meta-openembedded
+          key: yocto-layers-${{ hashFiles('scripts/fetch-layers.sh') }}
+
+      - name: Fetch layers
+        run: bash scripts/fetch-layers.sh
+
+      - name: Install rclone
+        if: env.R2_BUCKET != ''
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Restore build cache from R2
+        if: env.R2_BUCKET != ''
+        run: |
+          mkdir -p yocto/sstate-cache yocto/downloads
+          rclone copy "r2:${R2_BUCKET}/sstate-cache" yocto/sstate-cache || true
+          rclone copy "r2:${R2_BUCKET}/downloads" yocto/downloads || true
+
+      - name: Build feed (Ubuntu 18.04 container)
+        run: bash scripts/build-feed.sh
+        env:
+          BB_NUMBER_THREADS: 4
+
+      - name: ABI version check
+        run: >
+          python3 scripts/check_versions.py
+          --deploy build/tmp/deploy/ipk
+          --target opkg-target/opkg-status.txt
+
+      - name: Assemble feed
+        run: >
+          python3 scripts/make_feed.py
+          --deploy build/tmp/deploy/ipk
+          --target opkg-target/opkg-status.txt
+          --allow-upgrade feed-allow-upgrade.txt
+          --out feed
+
+      - name: Save build cache to R2
+        if: env.R2_BUCKET != ''
+        run: |
+          rclone sync yocto/sstate-cache "r2:${R2_BUCKET}/sstate-cache"
+          rclone sync yocto/downloads "r2:${R2_BUCKET}/downloads"
+
+      - name: Upload feed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brickyard
+          path: feed/
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd feed
+          gh release create "${GITHUB_REF_NAME}" ./* \
+            --title "Neato feed ${GITHUB_REF_NAME}" \
+            --notes "opkg feed for Neato LEGO (aarch64 / glibc 2.30 / zeus). Add to the robot: src/gz brickyard https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+          || gh release upload "${GITHUB_REF_NAME}" ./* --clobber

@@ -1,0 +1,9 @@
+# Packages listed here are allowed into the feed even though they already
+# exist on the robot. Everything NOT listed here gets pruned if the target
+# has it (safety: never let `opkg upgrade` replace core system libraries).
+#
+# Only add a package if you know exactly why the robot needs a newer build
+# of it, and you have tested that it doesn't break the stock firmware.
+#
+# Example (NOT recommended, shown for syntax):
+# libarchive
