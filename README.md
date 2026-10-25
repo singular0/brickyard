@@ -59,9 +59,6 @@ Dependencies pulled in by these are in the feed too. Run `opkg list` after
 - **The feed never touches system packages.** Anything that already ships
   with the stock firmware (glibc, openssl, systemd, …) is left out, so
   `opkg install` and `opkg upgrade` can't replace core libraries.
-- **Firmware updates wipe your additions.** A Neato OTA update rewrites the
-  root filesystem, taking installed packages, SSH keys and the feed entry in
-  `opkg.conf` with it. Repeat the steps above after an update.
 - **No kernel modules.** The robot runs a custom kernel build that can't be
   reproduced, so the feed contains userspace software only.
 
