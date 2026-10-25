@@ -12,6 +12,10 @@ on:
 
 concurrency: brickyard
 
+# The repo default token is read-only; publishing a release needs write.
+permissions:
+  contents: write
+
 env:
   # Optional Cloudflare R2 cache (sstate + downloads). Leave the secrets
   # unset to build without a persistent cache.
