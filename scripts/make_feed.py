@@ -7,6 +7,11 @@ already on the target (plus an explicit allow-upgrade list), otherwise
 `opkg upgrade` on the robot could replace core libraries (glibc, openssl,
 systemd, ...) and brick the device.
 
+Of what remains, only packages reachable from the root packagegroup (via
+Depends/Recommends) are published. The build also emits thousands of unused
+sibling packages (perl modules, glibc locales, ...) that would otherwise
+blow past GitHub's 1000-assets-per-release limit.
+
 Output is a single flat directory: *.ipk + Packages + Packages.gz, ready to
 upload to a GitHub release or any static HTTP host.
 """
@@ -14,6 +19,7 @@ import argparse
 import gzip
 import io
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -92,25 +98,83 @@ def load_target_names(status_path):
     return names
 
 
+def load_target_provides(status_path):
+    """Names the target satisfies: its packages plus their Provides."""
+    names = set()
+    with open(status_path) as f:
+        for line in f:
+            if line.startswith(("Package: ", "Provides: ")):
+                for alts in parse_deps(line.split(":", 1)[1]):
+                    names.update(alts)
+    return names
+
+
+def parse_deps(value):
+    """Parse 'a (>= 1), b | c' into [['a'], ['b', 'c']], dropping versions."""
+    deps = []
+    for item in value.split(","):
+        alts = [re.sub(r"\(.*?\)", "", a).strip() for a in item.split("|")]
+        alts = [a for a in alts if a]
+        if alts:
+            deps.append(alts)
+    return deps
+
+
+def reachable(roots, candidates, target_provides, allow):
+    """Return candidate names reachable from roots via Depends/Recommends.
+
+    Dependencies the target already satisfies are not followed (unless
+    allow-listed). Returns (names, unresolved) where unresolved lists
+    hard Depends that neither the feed nor the target can satisfy.
+    """
+    provider = {}
+    for name, entries in candidates.items():
+        provider.setdefault(name, name)
+        for _path, fields in entries:
+            for alts in parse_deps(stanza_get(fields, "Provides")):
+                for a in alts:
+                    provider.setdefault(a, name)
+
+    seen, unresolved = set(), []
+    stack = [r for r in roots if r in candidates]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for _path, fields in candidates[name]:
+            for field in ("Depends", "Recommends"):
+                for alts in parse_deps(stanza_get(fields, field)):
+                    if any(a in target_provides and a not in allow for a in alts):
+                        continue
+                    hit = next((provider[a] for a in alts if a in provider), None)
+                    if hit:
+                        stack.append(hit)
+                    elif field == "Depends":
+                        unresolved.append(f"{name}: {' | '.join(alts)}")
+    return seen, unresolved
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--deploy", required=True, help="build/tmp/deploy/ipk")
     ap.add_argument("--target", required=True, help="target opkg status file")
     ap.add_argument("--allow-upgrade", default=None,
                     help="file with package names allowed to shadow target packages")
+    ap.add_argument("--root", default="packagegroup-brickyard",
+                    help="packagegroup whose dependency closure is published")
     ap.add_argument("--out", required=True, help="output feed directory")
     args = ap.parse_args()
 
     target_names = load_target_names(args.target)
+    target_provides = load_target_provides(args.target)
     allow = set()
     if args.allow_upgrade and os.path.exists(args.allow_upgrade):
         with open(args.allow_upgrade) as f:
             allow = {l.strip() for l in f if l.strip() and not l.startswith("#")}
 
-    os.makedirs(args.out, exist_ok=True)
-    stanzas = []
-    kept = skipped_target = skipped_aux = 0
-    total_bytes = 0
+    candidates = {}
+    skipped_target = skipped_aux = 0
 
     for path, fields in iter_deploy_ipks(args.deploy):
         pkg = stanza_get(fields, "Package")
@@ -122,7 +186,25 @@ def main():
         if pkg.endswith(SKIP_SUFFIXES) or pkg.startswith(SKIP_PREFIXES):
             skipped_aux += 1
             continue
+        candidates.setdefault(pkg, []).append((path, fields))
 
+    if args.root not in candidates:
+        sys.exit(f"error: root package {args.root} not found in {args.deploy}")
+    wanted, unresolved = reachable([args.root, *allow], candidates,
+                                   target_provides, allow)
+    if unresolved:
+        print("error: dependencies not satisfiable by feed or target:", file=sys.stderr)
+        for u in unresolved:
+            print(f"  {u}", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(args.out, exist_ok=True)
+    stanzas = []
+    kept = 0
+    total_bytes = 0
+    skipped_unused = sum(len(v) for k, v in candidates.items() if k not in wanted)
+
+    for path, fields in (e for k in sorted(wanted) for e in candidates[k]):
         fn = os.path.basename(path)
         shutil.copy2(path, os.path.join(args.out, fn))
         total_bytes += os.path.getsize(path)
@@ -134,7 +216,8 @@ def main():
         kept += 1
 
     stanzas.sort(key=lambda f: stanza_get(f, "Package").lower())
-    index = "\n".join(
+    # stanzas must be separated by a blank line, or opkg reads one package
+    index = "\n\n".join(
         "\n".join(f"{k}: {v}" for k, v in fields) for fields in stanzas
     ) + "\n"
     with open(os.path.join(args.out, "Packages"), "w") as f:
@@ -146,6 +229,7 @@ def main():
     print(f"  kept:              {kept} packages ({total_bytes / 1e6:.1f} MB)")
     print(f"  skipped (on target): {skipped_target}")
     print(f"  skipped (aux):     {skipped_aux}")
+    print(f"  skipped (unused):  {skipped_unused}")
 
 
 if __name__ == "__main__":

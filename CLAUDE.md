@@ -48,6 +48,12 @@ therefore drops every package whose name already exists in
 `feed-allow-upgrade.txt`. It also drops `-dev`/`-dbg`/`-doc`/`-staticdev`/
 `-src`/`-ptest` and `locale-base-*` packages.
 
+Of what's left, only packages reachable from `packagegroup-brickyard` (and
+allow-listed ones) via `Depends`/`Recommends` are published; a hard
+dependency neither the feed nor the target satisfies fails the script. The
+build emits ~3000 sibling packages (perl modules, glibc locales/gconv, ...)
+and GitHub caps a release at 1000 assets, so this pruning is load-bearing.
+
 `check_versions.py` does not gate feed contents; it validates the layer pins.
 `libc6` mismatch is a hard failure, other critical libs only warn.
 
